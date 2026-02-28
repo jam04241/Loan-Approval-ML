@@ -1,5 +1,6 @@
-joblib
+streamlit
+altair
 pandas
 numpy
 scikit-learn
-streamlit
+joblib
