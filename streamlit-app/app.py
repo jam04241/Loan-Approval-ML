@@ -21,7 +21,6 @@ def migrate_loanapplications_schema(conn):
         "years_employed": "REAL",
         "annual_income": "REAL",
         "credit_score": "INTEGER",
-        "credit_history_years": "REAL",
         "savings_assets": "REAL",
         "defaults_on_file": "INTEGER",
         "delinquencies_last_2yrs": "INTEGER",
@@ -48,7 +47,6 @@ def init_db():
         years_employed REAL,
         annual_income REAL,
         credit_score INTEGER,
-        credit_history_years REAL,
         savings_assets REAL,
         defaults_on_file INTEGER,
         delinquencies_last_2yrs INTEGER,
@@ -149,7 +147,7 @@ def insert_loan_record(record):
     """Insert a single loan record into the database."""
     required_fields = [
         'years_employed', 'annual_income', 'credit_score',
-        'credit_history_years', 'savings_assets', 'defaults_on_file',
+        'savings_assets', 'defaults_on_file',
         'delinquencies_last_2yrs', 'product_type', 'loan_intent',
         'loan_amount', 'status'
     ]
@@ -161,15 +159,14 @@ def insert_loan_record(record):
         cursor = conn.cursor()
         cursor.execute("""
             INSERT INTO LoanApplications 
-            (years_employed, annual_income, credit_score, credit_history_years,
+            (years_employed, annual_income, credit_score,
              savings_assets, defaults_on_file, delinquencies_last_2yrs,
              product_type, loan_intent, loan_amount, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             record['years_employed'],
             record['annual_income'],
             record['credit_score'],
-            record['credit_history_years'],
             record['savings_assets'],
             record['defaults_on_file'],
             record['delinquencies_last_2yrs'],
@@ -228,7 +225,6 @@ if st.session_state.page == "Applicant Form":
             years_employed = st.number_input("Years Employed", 0.0, 60.0, step=0.1, format="%.1f")
             annual_income = st.number_input("Annual Income ($)", 0.0, step=1000.0, format="%.2f")
             credit_score = st.number_input("Credit Score", 300, 850, step=1)
-            credit_history_years = st.number_input("Credit History (years)", 0.0, 50.0, step=0.1, format="%.1f")
             savings_assets = st.number_input("Savings & Assets ($)", 0.0, step=1000.0, format="%.2f")
         with col2:
             defaults_on_file = st.selectbox("Defaults on File", [0, 1], format_func=lambda x: "Yes" if x else "No")
@@ -243,7 +239,6 @@ if st.session_state.page == "Applicant Form":
                 'years_employed': years_employed,
                 'annual_income': annual_income,
                 'credit_score': credit_score,
-                'credit_history_years': credit_history_years,
                 'savings_assets': savings_assets,
                 'defaults_on_file': defaults_on_file,
                 'delinquencies_last_2yrs': delinquencies_last_2yrs,
@@ -286,7 +281,7 @@ elif st.session_state.page == "Loan History":
 
     conn = get_connection()
     df = pd.read_sql_query(
-        f"""SELECT years_employed, annual_income, credit_score, credit_history_years,
+        f"""SELECT years_employed, annual_income, credit_score,
                   savings_assets, defaults_on_file, delinquencies_last_2yrs,
                   product_type, loan_intent, loan_amount, status, date_submitted
            FROM LoanApplications {where_clause} ORDER BY date_submitted {order_sql}""", conn, params=params)
@@ -318,7 +313,6 @@ elif st.session_state.page == "Upload CSV":
     - years_employed
     - annual_income
     - credit_score
-    - credit_history_years
     - savings_assets
     - defaults_on_file (0 or 1)
     - delinquencies_last_2yrs
@@ -338,7 +332,7 @@ elif st.session_state.page == "Upload CSV":
             # Only show columns relevant to the model (matches notebook feature selection)
             display_cols = [
                 'years_employed', 'annual_income', 'credit_score',
-                'credit_history_years', 'savings_assets', 'defaults_on_file',
+                'savings_assets', 'defaults_on_file',
                 'delinquencies_last_2yrs', 'product_type', 'loan_intent',
                 'loan_amount', 'loan_status'
             ]
@@ -348,7 +342,7 @@ elif st.session_state.page == "Upload CSV":
 
             required_cols = [
                 'years_employed', 'annual_income', 'credit_score',
-                'credit_history_years', 'savings_assets', 'defaults_on_file',
+                'savings_assets', 'defaults_on_file',
                 'delinquencies_last_2yrs', 'product_type', 'loan_intent',
                 'loan_amount', 'loan_status'
             ]
@@ -367,7 +361,6 @@ elif st.session_state.page == "Upload CSV":
                             'years_employed': float(row['years_employed']),
                             'annual_income': float(row['annual_income']),
                             'credit_score': int(row['credit_score']),
-                            'credit_history_years': float(row['credit_history_years']),
                             'savings_assets': float(row['savings_assets']),
                             'defaults_on_file': int(row['defaults_on_file']),
                             'delinquencies_last_2yrs': int(row['delinquencies_last_2yrs']),
