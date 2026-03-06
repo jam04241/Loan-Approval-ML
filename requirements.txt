@@ -3,5 +3,10 @@ altair
 pandas
 numpy
 scikit-learn
+imbalanced-learn
+matplotlib
+seaborn
 joblib
 xgboost
+shap
+optuna
