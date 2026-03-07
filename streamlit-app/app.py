@@ -105,34 +105,51 @@ def import_model_from_pkl(uploaded_file):
         st.sidebar.error(f"❌ Error importing model: {e}")
         return None
 
+def apply_hard_rejection_rules(input_dict):
+    """Return a rejection reason string if hard rules are triggered, else None."""
+    if input_dict.get('defaults_on_file', 0) == 1:
+        return "Rejected (defaults on file)"
+    if input_dict.get('credit_score', 850) < 580:
+        return "Rejected (credit score below minimum)"
+    if input_dict.get('delinquencies_last_2yrs', 0) >= 3:
+        return "Rejected (too many delinquencies)"
+    return None
+
 def predict_loan_status(input_dict, model_obj):
     """Predict loan status using the loaded model (if any)."""
+    # Hard rejection rules run before the model
+    hard_result = apply_hard_rejection_rules(input_dict)
+    if hard_result:
+        return hard_result
+
     if model_obj is None:
         return "Manual Review (No Model)"
     try:
         if hasattr(model_obj, 'predict'):
             input_df = pd.DataFrame([input_dict])
+            # Use stricter threshold (0.65) when model supports predict_proba
+            if hasattr(model_obj, 'predict_proba'):
+                proba = model_obj.predict_proba(input_df)[0][1]
+                return "Approved" if proba >= 0.65 else "Rejected"
             pred = model_obj.predict(input_df)[0]
             return "Approved" if pred == 1 else "Rejected"
         elif isinstance(model_obj, dict):
             model = model_obj["model"]
-            le = model_obj["le"]
             columns = model_obj["columns"]
             scaler = model_obj.get("scaler", None)
 
             input_df = pd.DataFrame([input_dict])
-            input_df['loan_intent'] = le.transform(input_df['loan_intent'])
-            # LabelEncoder maps alphabetically: Credit Card=0, Line of Credit=1, Personal Loan=2
-            product_map = {"Credit Card": 0, "Line of Credit": 1, "Personal Loan": 2}
-            input_df['product_type'] = input_df['product_type'].map(product_map)
             input_df = input_df[columns]
 
-            # Scale features if a scaler was saved with the model
             if scaler is not None:
                 input_scaled = scaler.transform(input_df)
             else:
                 input_scaled = input_df
 
+            # Use stricter threshold (0.65) when model supports predict_proba
+            if hasattr(model, 'predict_proba'):
+                proba = model.predict_proba(input_scaled)[0][1]
+                return "Approved" if proba >= 0.65 else "Rejected"
             pred = model.predict(input_scaled)[0]
             return "Approved" if pred == 1 else "Rejected"
         else:
@@ -148,8 +165,7 @@ def insert_loan_record(record):
     required_fields = [
         'years_employed', 'annual_income', 'credit_score',
         'savings_assets', 'defaults_on_file',
-        'delinquencies_last_2yrs', 'product_type', 'loan_intent',
-        'loan_amount', 'status'
+        'delinquencies_last_2yrs', 'loan_amount', 'status'
     ]
     for field in required_fields:
         if field not in record:
@@ -161,8 +177,8 @@ def insert_loan_record(record):
             INSERT INTO LoanApplications 
             (years_employed, annual_income, credit_score,
              savings_assets, defaults_on_file, delinquencies_last_2yrs,
-             product_type, loan_intent, loan_amount, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             loan_amount, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             record['years_employed'],
             record['annual_income'],
@@ -170,8 +186,6 @@ def insert_loan_record(record):
             record['savings_assets'],
             record['defaults_on_file'],
             record['delinquencies_last_2yrs'],
-            record['product_type'],
-            record['loan_intent'],
             record['loan_amount'],
             record['status']
         ))
@@ -229,8 +243,6 @@ if st.session_state.page == "Applicant Form":
         with col2:
             defaults_on_file = st.selectbox("Defaults on File", [0, 1], format_func=lambda x: "Yes" if x else "No")
             delinquencies_last_2yrs = st.number_input("Delinquencies (last 2 years)", 0, 20, step=1)
-            product_type = st.selectbox("Product Type", ["Credit Card", "Personal Loan", "Line of Credit"])
-            loan_intent = st.selectbox("Loan Intent", ["Debt Consolidation", "Home Improvement", "Business", "Education", "Medical", "Personal"])
             loan_amount = st.number_input("Loan Amount ($)", 0.0, step=1000.0, format="%.2f")
 
         submitted = st.form_submit_button("Submit Application")
@@ -242,8 +254,6 @@ if st.session_state.page == "Applicant Form":
                 'savings_assets': savings_assets,
                 'defaults_on_file': defaults_on_file,
                 'delinquencies_last_2yrs': delinquencies_last_2yrs,
-                'product_type': product_type,
-                'loan_intent': loan_intent,
                 'loan_amount': loan_amount
             }
             status = predict_loan_status(input_data, current_model)
@@ -283,7 +293,7 @@ elif st.session_state.page == "Loan History":
     df = pd.read_sql_query(
         f"""SELECT years_employed, annual_income, credit_score,
                   savings_assets, defaults_on_file, delinquencies_last_2yrs,
-                  product_type, loan_intent, loan_amount, status, date_submitted
+                  loan_amount, status, date_submitted
            FROM LoanApplications {where_clause} ORDER BY date_submitted {order_sql}""", conn, params=params)
     conn.close()
 
@@ -316,8 +326,6 @@ elif st.session_state.page == "Upload CSV":
     - savings_assets
     - defaults_on_file (0 or 1)
     - delinquencies_last_2yrs
-    - product_type (one of: Credit Card, Personal Loan, Line of Credit)
-    - loan_intent (one of: Debt Consolidation, Home Improvement, Business, Education, Medical, Personal)
     - loan_amount
     - loan_status (1 for Approved, 0 for Rejected)
 
@@ -333,8 +341,7 @@ elif st.session_state.page == "Upload CSV":
             display_cols = [
                 'years_employed', 'annual_income', 'credit_score',
                 'savings_assets', 'defaults_on_file',
-                'delinquencies_last_2yrs', 'product_type', 'loan_intent',
-                'loan_amount', 'loan_status'
+                'delinquencies_last_2yrs', 'loan_amount', 'loan_status'
             ]
             preview_cols = [c for c in display_cols if c in df.columns]
             st.write("Preview of uploaded data (first 5 rows):")
@@ -343,8 +350,7 @@ elif st.session_state.page == "Upload CSV":
             required_cols = [
                 'years_employed', 'annual_income', 'credit_score',
                 'savings_assets', 'defaults_on_file',
-                'delinquencies_last_2yrs', 'product_type', 'loan_intent',
-                'loan_amount', 'loan_status'
+                'delinquencies_last_2yrs', 'loan_amount', 'loan_status'
             ]
             missing = [col for col in required_cols if col not in df.columns]
             if missing:
@@ -364,18 +370,9 @@ elif st.session_state.page == "Upload CSV":
                             'savings_assets': float(row['savings_assets']),
                             'defaults_on_file': int(row['defaults_on_file']),
                             'delinquencies_last_2yrs': int(row['delinquencies_last_2yrs']),
-                            'product_type': str(row['product_type']).strip(),
-                            'loan_intent': str(row['loan_intent']).strip(),
                             'loan_amount': float(row['loan_amount']),
                             'status': status_map.get(int(row['loan_status']), "Unknown")
                         }
-                        # Validate categoricals
-                        valid_product = ["Credit Card", "Personal Loan", "Line of Credit"]
-                        valid_intent = ["Debt Consolidation", "Home Improvement", "Business", "Education", "Medical", "Personal"]
-                        if record['product_type'] not in valid_product:
-                            raise ValueError(f"Invalid product_type: {record['product_type']}")
-                        if record['loan_intent'] not in valid_intent:
-                            raise ValueError(f"Invalid loan_intent: {record['loan_intent']}")
                         if record['status'] == "Unknown":
                             raise ValueError(f"Invalid loan_status: {row['loan_status']} (must be 0 or 1)")
 
