@@ -106,33 +106,38 @@ def import_model_from_pkl(uploaded_file):
         return None
 
 def apply_hard_rejection_rules(input_dict):
-    """Return a rejection reason string if hard rules are triggered, else None."""
+    """Return a (status, reason) tuple. If hard rules trigger, return Rejected with reason, else None."""
     if input_dict.get('defaults_on_file', 0) == 1:
-        return "Rejected (defaults on file)"
+        return ("Rejected", "Applicant has defaults on file.")
     if input_dict.get('credit_score', 850) < 580:
-        return "Rejected (credit score below minimum)"
+        return ("Rejected", f"Credit score ({input_dict.get('credit_score')}) is below the minimum threshold of 580.")
     if input_dict.get('delinquencies_last_2yrs', 0) >= 3:
-        return "Rejected (too many delinquencies)"
+        return ("Rejected", f"Too many delinquencies in the last 2 years ({input_dict.get('delinquencies_last_2yrs')}).")
     return None
 
 def predict_loan_status(input_dict, model_obj):
-    """Predict loan status using the loaded model (if any)."""
-    # Hard rejection rules run before the model
+    """Predict loan status. Returns (status, reason) where reason is set only for Rejected."""
     hard_result = apply_hard_rejection_rules(input_dict)
     if hard_result:
         return hard_result
 
     if model_obj is None:
-        return "Manual Review (No Model)"
+        # No model loaded — approve if no hard rules triggered
+        return ("Approved", None)
     try:
         if hasattr(model_obj, 'predict'):
             input_df = pd.DataFrame([input_dict])
-            # Use stricter threshold (0.65) when model supports predict_proba
             if hasattr(model_obj, 'predict_proba'):
                 proba = model_obj.predict_proba(input_df)[0][1]
-                return "Approved" if proba >= 0.65 else "Rejected"
+                if proba >= 0.65:
+                    return ("Approved", None)
+                else:
+                    return ("Rejected", "Application did not meet the lending criteria based on risk assessment.")
             pred = model_obj.predict(input_df)[0]
-            return "Approved" if pred == 1 else "Rejected"
+            if pred == 1:
+                return ("Approved", None)
+            else:
+                return ("Rejected", "Application did not meet the lending criteria based on risk assessment.")
         elif isinstance(model_obj, dict):
             model = model_obj["model"]
             columns = model_obj["columns"]
@@ -146,16 +151,21 @@ def predict_loan_status(input_dict, model_obj):
             else:
                 input_scaled = input_df
 
-            # Use stricter threshold (0.65) when model supports predict_proba
             if hasattr(model, 'predict_proba'):
                 proba = model.predict_proba(input_scaled)[0][1]
-                return "Approved" if proba >= 0.65 else "Rejected"
+                if proba >= 0.65:
+                    return ("Approved", None)
+                else:
+                    return ("Rejected", "Application did not meet the lending criteria based on risk assessment.")
             pred = model.predict(input_scaled)[0]
-            return "Approved" if pred == 1 else "Rejected"
+            if pred == 1:
+                return ("Approved", None)
+            else:
+                return ("Rejected", "Application did not meet the lending criteria based on risk assessment.")
         else:
-            return "Unknown model format"
+            return ("Rejected", "Unknown model format — could not evaluate application.")
     except Exception as e:
-        return f"Error: {str(e)}"
+        return ("Rejected", f"Evaluation error: {str(e)}")
 
 # -------------------------------
 # Helper function to insert a loan record
@@ -256,11 +266,16 @@ if st.session_state.page == "Applicant Form":
                 'delinquencies_last_2yrs': delinquencies_last_2yrs,
                 'loan_amount': loan_amount
             }
-            status = predict_loan_status(input_data, current_model)
+            status, reason = predict_loan_status(input_data, current_model)
             record = input_data.copy()
             record['status'] = status
             if insert_loan_record(record):
-                st.success(f"Application Submitted — Status: {status}")
+                if status == "Approved":
+                    st.success(f"✅ Application Submitted — **Approved**")
+                else:
+                    st.error(f"❌ Application Submitted — **Rejected**")
+                    if reason:
+                        st.warning(f"**Reason:** {reason}")
             else:
                 st.error("Failed to save application.")
 
@@ -283,7 +298,7 @@ elif st.session_state.page == "Loan History":
 
     order_sql = "DESC" if sort_order == "Latest First" else "ASC"
     if status_filter == "All":
-        where_clause = ""
+        where_clause = "WHERE status IN ('Approved', 'Rejected')"
         params = ()
     else:
         where_clause = "WHERE status = ?"
@@ -304,12 +319,10 @@ elif st.session_state.page == "Loan History":
         rejected = (df['status'] == 'Rejected').sum()
         other = total - approved - rejected
 
-        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+        col_m1, col_m2, col_m3 = st.columns(3)
         col_m1.metric("Total Records", total)
         col_m2.metric("Approved", approved)
         col_m3.metric("Rejected", rejected)
-        if other > 0:
-            col_m4.metric("Other", other)
 
         st.dataframe(df, use_container_width=True)
     else:
