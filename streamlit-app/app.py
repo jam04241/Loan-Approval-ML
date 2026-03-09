@@ -1,6 +1,7 @@
 import streamlit as st
 import sqlite3
 import pandas as pd
+import numpy as np
 import os
 import joblib
 
@@ -78,14 +79,18 @@ init_db()
 # -------------------------------
 @st.cache_resource
 def load_uploaded_model():
-    """Loads the model from model.pkl – can be a full pipeline or a dict."""
+    """Loads the model from model.pkl – supports dict bundles, sklearn pipelines, and standalone models."""
     try:
-        if os.path.exists('model.pkl'):
-            obj = joblib.load('model.pkl')
-            if isinstance(obj, dict) and "model" in obj and "le" in obj and "columns" in obj:
-                return obj
-            elif hasattr(obj, 'predict'):
-                return obj
+        if not os.path.exists('model.pkl'):
+            return None
+        obj = joblib.load('model.pkl')
+        # Dict bundle (e.g. {'model': ..., 'columns': ...})
+        if isinstance(obj, dict) and "model" in obj:
+            return obj
+        # Sklearn Pipeline or any estimator with .predict
+        if hasattr(obj, 'predict'):
+            return obj
+        st.warning("⚠️ Uploaded PKL is not a recognised model format (expected a dict with 'model' key, or an sklearn-compatible estimator).")
         return None
     except Exception as e:
         st.error(f"Error loading model: {e}")
@@ -106,66 +111,73 @@ def import_model_from_pkl(uploaded_file):
         return None
 
 def apply_hard_rejection_rules(input_dict):
-    """Return a (status, reason) tuple. If hard rules trigger, return Rejected with reason, else None."""
+    """Return a list of (status, reason) tuples for every hard rule that triggers."""
+    violations = []
     if input_dict.get('defaults_on_file', 0) == 1:
-        return ("Rejected", "Applicant has defaults on file.")
-    if input_dict.get('credit_score', 850) < 580:
-        return ("Rejected", f"Credit score ({input_dict.get('credit_score')}) is below the minimum threshold of 580.")
+        violations.append("Applicant has defaults on file.")
+    if input_dict.get('credit_score', 1000) < 580:
+        violations.append(f"Credit score ({input_dict.get('credit_score')}) is below the minimum threshold of 580.")
     if input_dict.get('delinquencies_last_2yrs', 0) >= 3:
-        return ("Rejected", f"Too many delinquencies in the last 2 years ({input_dict.get('delinquencies_last_2yrs')}).")
+        violations.append(f"Too many delinquencies in the last 2 years ({input_dict.get('delinquencies_last_2yrs')}).")
+    return violations
+
+def _get_model_probability(input_dict, model_obj):
+    """Run the model and return the approval probability, or None on failure."""
+    if model_obj is None:
+        return None
+    try:
+        # Apply log1p to monetary/skewed features (matches notebook training preprocessing)
+        LOG1P_COLS = {'annual_income', 'savings_assets', 'loan_amount'}
+        transformed = {
+            k: (np.log1p(v) if k in LOG1P_COLS else v)
+            for k, v in input_dict.items()
+        }
+
+        if isinstance(model_obj, dict) and "model" in model_obj:
+            model = model_obj["model"]
+            columns = model_obj.get("columns")
+            scaler = model_obj.get("scaler")
+
+            input_df = pd.DataFrame([transformed])
+            if columns is not None:
+                input_df = input_df.reindex(columns=columns, fill_value=0)
+            if scaler is not None:
+                input_df = pd.DataFrame(scaler.transform(input_df), columns=input_df.columns)
+
+            if hasattr(model, 'predict_proba'):
+                return float(model.predict_proba(input_df)[0][1])
+            return float(model.predict(input_df)[0])
+
+        elif hasattr(model_obj, 'predict'):
+            input_df = pd.DataFrame([transformed])
+            if hasattr(model_obj, 'predict_proba'):
+                return float(model_obj.predict_proba(input_df)[0][1])
+            return float(model_obj.predict(input_df)[0])
+
+    except Exception as e:
+        st.warning(f"⚠️ Model evaluation warning: {e}")
     return None
 
 def predict_loan_status(input_dict, model_obj):
-    """Predict loan status. Returns (status, reason, probability) where probability is the approval probability (or None)."""
-    hard_result = apply_hard_rejection_rules(input_dict)
-    if hard_result:
-        return (*hard_result, None)
+    """Predict loan status. Returns (status, reasons_list, probability)."""
+    violations = apply_hard_rejection_rules(input_dict)
+
+    # Always attempt to get model probability, even for hard rejections
+    probability = _get_model_probability(input_dict, model_obj)
+
+    if violations:
+        return ("Rejected", violations, probability)
 
     if model_obj is None:
-        # No model loaded — approve if no hard rules triggered
-        return ("Approved", None, None)
-    try:
-        if hasattr(model_obj, 'predict'):
-            input_df = pd.DataFrame([input_dict])
-            if hasattr(model_obj, 'predict_proba'):
-                proba = model_obj.predict_proba(input_df)[0][1]
-                if proba >= 0.65:
-                    return ("Approved", None, proba)
-                else:
-                    return ("Rejected", "Application did not meet the lending criteria based on risk assessment.", proba)
-            pred = model_obj.predict(input_df)[0]
-            if pred == 1:
-                return ("Approved", None, None)
-            else:
-                return ("Rejected", "Application did not meet the lending criteria based on risk assessment.", None)
-        elif isinstance(model_obj, dict):
-            model = model_obj["model"]
-            columns = model_obj["columns"]
-            scaler = model_obj.get("scaler", None)
+        return ("Approved", [], None)
 
-            input_df = pd.DataFrame([input_dict])
-            input_df = input_df[columns]
+    if probability is None:
+        return ("Rejected", ["Could not evaluate application — model returned no result."], None)
 
-            if scaler is not None:
-                input_scaled = scaler.transform(input_df)
-            else:
-                input_scaled = input_df
-
-            if hasattr(model, 'predict_proba'):
-                proba = model.predict_proba(input_scaled)[0][1]
-                if proba >= 0.65:
-                    return ("Approved", None, proba)
-                else:
-                    return ("Rejected", "Application did not meet the lending criteria based on risk assessment.", proba)
-            pred = model.predict(input_scaled)[0]
-            if pred == 1:
-                return ("Approved", None, None)
-            else:
-                return ("Rejected", "Application did not meet the lending criteria based on risk assessment.", None)
-        else:
-            return ("Rejected", "Unknown model format — could not evaluate application.", None)
-    except Exception as e:
-        return ("Rejected", f"Evaluation error: {str(e)}", None)
+    if probability >= 0.65:
+        return ("Approved", [], probability)
+    else:
+        return ("Rejected", ["Application did not meet the lending criteria based on risk assessment."], probability)
 
 # -------------------------------
 # Helper function to insert a loan record
@@ -248,7 +260,7 @@ if st.session_state.page == "Applicant Form":
         with col1:
             years_employed = st.number_input("Years Employed", 0.0, 60.0, step=0.1, format="%.1f")
             annual_income = st.number_input("Annual Income ($)", 0.0, step=1000.0, format="%.2f")
-            credit_score = st.number_input("Credit Score", 300, 850, step=1)
+            credit_score = st.number_input("Credit Score", 300, 1000, step=1)
             savings_assets = st.number_input("Savings & Assets ($)", 0.0, step=1000.0, format="%.2f")
         with col2:
             defaults_on_file = st.selectbox("Defaults on File", [0, 1], format_func=lambda x: "Yes" if x else "No")
@@ -266,7 +278,7 @@ if st.session_state.page == "Applicant Form":
                 'delinquencies_last_2yrs': delinquencies_last_2yrs,
                 'loan_amount': loan_amount
             }
-            status, reason, probability = predict_loan_status(input_data, current_model)
+            status, reasons, probability = predict_loan_status(input_data, current_model)
             record = input_data.copy()
             record['status'] = status
             if insert_loan_record(record):
@@ -274,8 +286,8 @@ if st.session_state.page == "Applicant Form":
                     st.success(f"✅ Application Submitted — **Approved** (Approval: {probability:.2%} | Rejection: {1 - probability:.2%})" if probability is not None else "✅ Application Submitted — **Approved**")
                 else:
                     st.error(f"❌ Application Submitted — **Rejected** (Approval: {probability:.2%} | Rejection: {1 - probability:.2%})" if probability is not None else "❌ Application Submitted — **Rejected**")
-                    if reason:
-                        st.warning(f"**Reason:** {reason}")
+                    for r in reasons:
+                        st.warning(f"**Reason:** {r}")
                 if probability is not None:
                     col_prob1, col_prob2 = st.columns(2)
                     col_prob1.metric("✅ Approval Probability", f"{probability:.2%}")
