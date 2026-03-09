@@ -271,13 +271,15 @@ if st.session_state.page == "Applicant Form":
             record['status'] = status
             if insert_loan_record(record):
                 if status == "Approved":
-                    st.success(f"✅ Application Submitted — **Approved**")
+                    st.success(f"✅ Application Submitted — **Approved** (Approval: {probability:.2%} | Rejection: {1 - probability:.2%})" if probability is not None else "✅ Application Submitted — **Approved**")
                 else:
-                    st.error(f"❌ Application Submitted — **Rejected**")
+                    st.error(f"❌ Application Submitted — **Rejected** (Approval: {probability:.2%} | Rejection: {1 - probability:.2%})" if probability is not None else "❌ Application Submitted — **Rejected**")
                     if reason:
                         st.warning(f"**Reason:** {reason}")
                 if probability is not None:
-                    st.info(f"📊 Approval Probability: **{probability:.2%}**")
+                    col_prob1, col_prob2 = st.columns(2)
+                    col_prob1.metric("✅ Approval Probability", f"{probability:.2%}")
+                    col_prob2.metric("❌ Rejection Probability", f"{1 - probability:.2%}")
             else:
                 st.error("Failed to save application.")
 
