@@ -116,28 +116,28 @@ def apply_hard_rejection_rules(input_dict):
     return None
 
 def predict_loan_status(input_dict, model_obj):
-    """Predict loan status. Returns (status, reason) where reason is set only for Rejected."""
+    """Predict loan status. Returns (status, reason, probability) where probability is the approval probability (or None)."""
     hard_result = apply_hard_rejection_rules(input_dict)
     if hard_result:
-        return hard_result
+        return (*hard_result, None)
 
     if model_obj is None:
         # No model loaded — approve if no hard rules triggered
-        return ("Approved", None)
+        return ("Approved", None, None)
     try:
         if hasattr(model_obj, 'predict'):
             input_df = pd.DataFrame([input_dict])
             if hasattr(model_obj, 'predict_proba'):
                 proba = model_obj.predict_proba(input_df)[0][1]
                 if proba >= 0.65:
-                    return ("Approved", None)
+                    return ("Approved", None, proba)
                 else:
-                    return ("Rejected", "Application did not meet the lending criteria based on risk assessment.")
+                    return ("Rejected", "Application did not meet the lending criteria based on risk assessment.", proba)
             pred = model_obj.predict(input_df)[0]
             if pred == 1:
-                return ("Approved", None)
+                return ("Approved", None, None)
             else:
-                return ("Rejected", "Application did not meet the lending criteria based on risk assessment.")
+                return ("Rejected", "Application did not meet the lending criteria based on risk assessment.", None)
         elif isinstance(model_obj, dict):
             model = model_obj["model"]
             columns = model_obj["columns"]
@@ -154,18 +154,18 @@ def predict_loan_status(input_dict, model_obj):
             if hasattr(model, 'predict_proba'):
                 proba = model.predict_proba(input_scaled)[0][1]
                 if proba >= 0.65:
-                    return ("Approved", None)
+                    return ("Approved", None, proba)
                 else:
-                    return ("Rejected", "Application did not meet the lending criteria based on risk assessment.")
+                    return ("Rejected", "Application did not meet the lending criteria based on risk assessment.", proba)
             pred = model.predict(input_scaled)[0]
             if pred == 1:
-                return ("Approved", None)
+                return ("Approved", None, None)
             else:
-                return ("Rejected", "Application did not meet the lending criteria based on risk assessment.")
+                return ("Rejected", "Application did not meet the lending criteria based on risk assessment.", None)
         else:
-            return ("Rejected", "Unknown model format — could not evaluate application.")
+            return ("Rejected", "Unknown model format — could not evaluate application.", None)
     except Exception as e:
-        return ("Rejected", f"Evaluation error: {str(e)}")
+        return ("Rejected", f"Evaluation error: {str(e)}", None)
 
 # -------------------------------
 # Helper function to insert a loan record
@@ -266,7 +266,7 @@ if st.session_state.page == "Applicant Form":
                 'delinquencies_last_2yrs': delinquencies_last_2yrs,
                 'loan_amount': loan_amount
             }
-            status, reason = predict_loan_status(input_data, current_model)
+            status, reason, probability = predict_loan_status(input_data, current_model)
             record = input_data.copy()
             record['status'] = status
             if insert_loan_record(record):
@@ -276,6 +276,8 @@ if st.session_state.page == "Applicant Form":
                     st.error(f"❌ Application Submitted — **Rejected**")
                     if reason:
                         st.warning(f"**Reason:** {reason}")
+                if probability is not None:
+                    st.info(f"📊 Approval Probability: **{probability:.2%}**")
             else:
                 st.error("Failed to save application.")
 
