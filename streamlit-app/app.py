@@ -113,13 +113,11 @@ def import_model_from_pkl(uploaded_file):
 def apply_hard_rejection_rules(input_dict):
     """Return a list of (status, reason) tuples for every hard rule that triggers."""
     violations = []
-    if input_dict.get('defaults_on_file', 0) == 1:
-        violations.append("Applicant has defaults on file.")
-    if input_dict.get('credit_score', 1000) < 580:
-        violations.append(f"Credit score ({input_dict.get('credit_score')}) is below the minimum threshold of 580.")
-    if input_dict.get('delinquencies_last_2yrs', 0) >= 3:
-        violations.append(f"Too many delinquencies in the last 2 years ({input_dict.get('delinquencies_last_2yrs')}).")
+    # Only enforce minimum credit score of 300
+    if input_dict.get('credit_score', 1000) < 300:
+        violations.append(f"Credit score ({input_dict.get('credit_score')}) is below the minimum threshold of 300.")
     return violations
+
 
 def _get_model_probability(input_dict, model_obj):
     """Run the model and return the approval probability, or None on failure."""
